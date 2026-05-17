@@ -8,6 +8,7 @@
     "lint": "eslint \"src/**/*.{ts,js,mjs,cjs}\" eslint.config.ts vitest.config.ts",
     "test": "vitest --project unit --run",
     "test:integration": "vitest --project integration --run",
+    "test:integration:vfkit-smoke": "vitest --project integration --run src/rootcell/integration/providers/macos-vfkit/cli-smoke.integration.test.ts",
     "test:integration:clean": "./test --clean",
     "test:integration:teardown": "./test --teardown",
     "test:all": "vitest --run"

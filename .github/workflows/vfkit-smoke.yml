@@ -1,0 +1,51 @@
+name: vfkit Smoke Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vfkit-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  vfkit-smoke:
+    name: vfkit smoke
+    runs-on: blacksmith-6vcpu-macos-latest
+    timeout-minutes: 60
+    env:
+      ROOTCELL_INTEGRATION_PROVIDER: macos-vfkit
+      ROOTCELL_STATE_DIR: ${{ runner.temp }}/rootcell-state
+      XDG_CACHE_HOME: ${{ runner.temp }}/xdg-cache
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        timeout-minutes: 2
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        timeout-minutes: 10
+        with:
+          github_access_token: ${{ github.token }}
+
+      - name: Install TypeScript dependencies
+        timeout-minutes: 15
+        run: nix shell .#hostTools --command bun install --frozen-lockfile
+
+      - name: Clean stale vfkit smoke state
+        timeout-minutes: 5
+        run: nix shell .#hostTools --command bun run test:integration:teardown
+
+      - name: Run vfkit smoke test
+        timeout-minutes: 45
+        run: nix shell .#hostTools --command bun run test:integration:vfkit-smoke
+
+      - name: Teardown vfkit smoke state
+        if: always()
+        timeout-minutes: 5
+        run: nix shell .#hostTools --command bun run test:integration:teardown

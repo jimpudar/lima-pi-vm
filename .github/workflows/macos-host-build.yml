@@ -2,11 +2,6 @@ name: macOS Host Package Build
 
 on:
   workflow_dispatch:
-    inputs:
-      confirm_paid_macos:
-        description: Type RUN to confirm starting a paid macOS hosted runner.
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -22,19 +17,13 @@ jobs:
     timeout-minutes: 5
 
     steps:
-      - name: Require repository owner and explicit confirmation
+      - name: Require repository owner
         env:
           ACTOR: ${{ github.actor }}
           REPOSITORY_OWNER: ${{ github.repository_owner }}
-          CONFIRM_PAID_MACOS: ${{ inputs.confirm_paid_macos }}
         run: |
           if [ "$ACTOR" != "$REPOSITORY_OWNER" ]; then
             echo "::error::Only the repository owner ($REPOSITORY_OWNER) may start the paid macOS runner."
-            exit 1
-          fi
-
-          if [ "$CONFIRM_PAID_MACOS" != "RUN" ]; then
-            echo "::error::Set confirm_paid_macos to RUN to start the paid macOS runner."
             exit 1
           fi
 
