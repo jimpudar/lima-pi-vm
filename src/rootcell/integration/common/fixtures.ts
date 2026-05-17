@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 
 export const TEST_INSTANCE = "test";
 export const LIFECYCLE_INSTANCE = "lifecycle-test";
+export const CLI_SMOKE_INSTANCE_PREFIX = "cli-smoke-";
 export const AGENT_VM_NAME = "agent-test";
 export const FIREWALL_VM_NAME = "firewall-test";
 export const FIREWALL_IP = "192.168.109.2";
