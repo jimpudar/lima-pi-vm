@@ -2,6 +2,16 @@
 
 let
   net = import ./network.nix;
+  firewallEgressInterface = net.firewallEgressInterface;
+  firewallPrivateInterface = net.firewallPrivateInterface;
+  egressMatch =
+    if net ? firewallControlMac
+    then { MACAddress = net.firewallControlMac; }
+    else { Name = firewallEgressInterface; };
+  privateMatch =
+    if net ? firewallPrivateMac
+    then { MACAddress = net.firewallPrivateMac; }
+    else { Name = firewallPrivateInterface; };
   reloadSh = pkgs.runCommand "agent-vm-reload-sh" {} ''
     ln -s /etc/agent-vm/reload.ts "$out"
   '';
@@ -44,8 +54,8 @@ in
 #   All egress must be HTTPS or SSH.
 #
 #   DNS is explicit too — the agent VM's networkConfig.DNS points at the
-#   firewall directly. dnsmasq forwards allowlisted suffixes to 1.1.1.1;
-#   everything else returns 0.0.0.0.
+#   firewall directly. dnsmasq forwards allowlisted suffixes to the firewall's
+#   system resolver; everything else returns 0.0.0.0.
 #
 # Why two mitmproxy instances? mitmproxy listens in one mode at a time —
 # transparent expects raw redirected TCP, regular expects HTTP CONNECT.
@@ -78,7 +88,7 @@ in
 
   # enp0s1 = vzNAT, our internet-egress NIC. Default route lives here.
   systemd.network.networks."10-enp0s1" = {
-    matchConfig.Name = "enp0s1";
+    matchConfig = egressMatch;
     networkConfig.DHCP = "ipv4";
   };
 
@@ -87,7 +97,7 @@ in
   # device.
   # Static address; DHCP would conflict with the agent's static .2.
   systemd.network.networks."20-enp0s2" = {
-    matchConfig.Name = "enp0s2";
+    matchConfig = privateMatch;
     networkConfig = {
       DHCP = "no";
       IPv6AcceptRA = false;
@@ -113,10 +123,10 @@ in
   networking.nftables.enable = true;
   networking.firewall = {
     enable = true;
-    interfaces.enp0s1 = {
+    interfaces.${firewallEgressInterface} = {
       allowedTCPPorts = [ 22 ];
     };
-    interfaces.enp0s2 = {
+    interfaces.${firewallPrivateInterface} = {
       allowedTCPPorts = [ 8080 8081 ];
       allowedUDPPorts = [ 53 ];
     };
@@ -139,9 +149,8 @@ in
         # doesn't fail — iif resolves to a kernel ifindex at parse time
         # and the device doesn't exist on the build host. iifname is a
         # string match resolved at rule-load time inside the running
-        # guest. The interface is enp0s2 (the second virtio-net,
-        # enp0s1 is the Apple Virtio NAT we don't configure).
-        iifname "enp0s2" tcp dport 443 redirect to :8081
+        # guest.
+        iifname "${firewallPrivateInterface}" tcp dport 443 redirect to :8081
       }
     '';
   };

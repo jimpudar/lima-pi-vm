@@ -5,7 +5,7 @@ import { ROOTCELL_SUBCOMMANDS } from "./metadata.ts";
 import { loadDotEnv, parseSecretMappings } from "./env.ts";
 import { resolveHostTool } from "./host-tools.ts";
 import { buildConfig, formatVmList } from "./rootcell.ts";
-import { deriveVmNames, listRootcellVmInstanceNames, loadRootcellInstance, seedRootcellInstanceFiles } from "./instance.ts";
+import { deriveVmNames, instancePaths, listRootcellVmInstanceNames, loadRootcellInstance, seedRootcellInstanceFiles } from "./instance.ts";
 import { runCapture } from "./process.ts";
 import { createProviderBundle } from "./providers/factory.ts";
 import { getMacAddressFor, MacOsVfkitNetworkProvider } from "./providers/macos-vfkit-network.ts";
@@ -285,6 +285,9 @@ describe("VM and network providers", () => {
         firewallPrivateInterface: z.literal("enp0s2"),
         firewallEgressInterface: z.literal("enp0s1"),
         firewallControlInterface: z.literal("enp0s1"),
+        agentPrivateMac: z.string().regex(/^52:54:00:/),
+        firewallPrivateMac: z.string().regex(/^52:54:00:/),
+        firewallControlMac: z.string().regex(/^52:54:00:/),
       }).strict(),
       vms: z.object({
         agent: z.object({
@@ -313,18 +316,35 @@ describe("VM and network providers", () => {
       firewallPrivateInterface: "enp0s2",
       firewallEgressInterface: "enp0s1",
       firewallControlInterface: "enp0s1",
+      agentPrivateMac: plan.vms.agent.privateMac,
+      firewallPrivateMac: plan.vms.firewall.privateMac,
+      firewallControlMac: plan.vms.firewall.controlMac,
     });
     expect(plan.vms.agent.kind).toBe("vfkit");
     expect(plan.vms.agent.useNat).toBe(false);
     expect(plan.vms.firewall.useNat).toBe(true);
     expect(plan.vms.firewall.controlMac).toMatch(/^52:54:00:/);
-    expect(plan.vms.agent.privateSocketPath).toContain("/repo/.rootcell/instances/dev/vfkit/network/agent-private.sock");
-    expect(plan.vms.firewall.privateSocketPath).toContain("/repo/.rootcell/instances/dev/vfkit/network/firewall-private.sock");
+    expect(plan.vms.agent.privateSocketPath).toBe(join(config.instanceDir, "v", "n", "ag.sock"));
+    expect(plan.vms.firewall.privateSocketPath).toBe(join(config.instanceDir, "v", "n", "fw.sock"));
+    expect(plan.vms.agent.privateSocketPath.length).toBeLessThan(104);
+    expect(plan.vms.firewall.privateSocketPath.length).toBeLessThan(104);
+  });
+
+  test("keeps vfkit socket paths short for long repos and instance names", () => {
+    const repo = "/Users/jmp/Library/Mobile Documents/com~apple~CloudDocs/projects/rootcell-with-a-long-name";
+    const instanceName = `a${"b".repeat(31)}`;
+    const config = buildConfig(repo, {}, fakeInstance(instanceName, repo));
+    const plan = new MacOsVfkitNetworkProvider(config, ignoreLog).plan();
+
+    expect(plan.vms.agent.privateSocketPath.length).toBeLessThan(104);
+    expect(plan.vms.firewall.privateSocketPath.length).toBeLessThan(104);
+    expect(join(config.instanceDir, "v", "a", "rest.sock").length).toBeLessThan(104);
+    expect(join(config.instanceDir, "v", "f", "rest.sock").length).toBeLessThan(104);
   });
 
   test("vfkit MACs are stable per repo instance and distinct across worktrees", () => {
     const config = buildConfig("/repo", {}, fakeInstance("dev"));
-    const otherWorktree = buildConfig("/other-repo", {}, fakeInstance("dev"));
+    const otherWorktree = buildConfig("/other-repo", {}, fakeInstance("dev", "/other-repo"));
 
     expect(getMacAddressFor(config, "firewall", "control")).toBe(getMacAddressFor(config, "firewall", "control"));
     expect(getMacAddressFor(config, "firewall", "control")).not.toBe(getMacAddressFor(otherWorktree, "firewall", "control"));
@@ -389,7 +409,7 @@ describe("VM and network providers", () => {
       agentHost: "192.168.109.3",
       identityPath: "/instance/ssh/rootcell_control_ed25519",
       knownHostsPath: "/instance/ssh/known_hosts",
-      controlPath: "/tmp/rootcell-ssh-test/%C",
+      controlPath: "/state/rootcell-ssh-test/%C",
     });
     expect(configText).toContain("Host rootcell-firewall");
     expect(configText).toContain("HostName 192.168.64.10");
@@ -399,9 +419,11 @@ describe("VM and network providers", () => {
     expect(configText).toContain("BatchMode yes");
     expect(configText).toContain("PasswordAuthentication no");
     expect(configText).toContain("KbdInteractiveAuthentication no");
+    expect(configText).toContain("ServerAliveInterval 5");
+    expect(configText).toContain("ServerAliveCountMax 3");
     expect(configText).toContain("ControlMaster auto");
     expect(configText).toContain("ControlPersist 60s");
-    expect(configText).toContain("ControlPath /tmp/rootcell-ssh-test/%C");
+    expect(configText).toContain("ControlPath /state/rootcell-ssh-test/%C");
   });
 
   test("proxyjump known_hosts removal clears only the rotated VM host", () => {
@@ -560,15 +582,15 @@ describe("instance state", () => {
   test("allocates stable unique /24 networks", () => {
     const repo = makeInstanceRepo();
     try {
-      seedRootcellInstanceFiles(repo, "default", ignoreLog);
-      const envA: NodeJS.ProcessEnv = {};
-      loadDotEnv(join(repo, ".rootcell/instances/default/.env"), envA);
+      const envA = instanceEnv(repo);
+      seedRootcellInstanceFiles(repo, "default", ignoreLog, envA);
+      loadDotEnv(instancePaths(repo, "default", envA).envPath, envA);
       const defaultInstance = loadRootcellInstance(repo, "default", envA);
       expect(defaultInstance).toEqual(expect.schemaMatching(RootcellInstanceSchema));
 
-      seedRootcellInstanceFiles(repo, "dev", ignoreLog);
-      const envB: NodeJS.ProcessEnv = {};
-      loadDotEnv(join(repo, ".rootcell/instances/dev/.env"), envB);
+      const envB = instanceEnv(repo);
+      seedRootcellInstanceFiles(repo, "dev", ignoreLog, envB);
+      loadDotEnv(instancePaths(repo, "dev", envB).envPath, envB);
       const devInstance = loadRootcellInstance(repo, "dev", envB);
       expect(devInstance).toEqual(expect.schemaMatching(RootcellInstanceSchema));
 
@@ -584,12 +606,13 @@ describe("instance state", () => {
   test("honors explicit first-run .2/.3 subnet pins", () => {
     const repo = makeInstanceRepo();
     try {
-      seedRootcellInstanceFiles(repo, "dev", ignoreLog);
-      const env: NodeJS.ProcessEnv = {
+      const env = {
+        ...instanceEnv(repo),
         FIREWALL_IP: "192.168.109.2",
         AGENT_IP: "192.168.109.3",
         NETWORK_PREFIX: "24",
       };
+      seedRootcellInstanceFiles(repo, "dev", ignoreLog, env);
       const instance = loadRootcellInstance(repo, "dev", env);
       expect(instance.state.subnet).toBe("192.168.109.0");
       expect(instance.state.firewallIp).toBe("192.168.109.2");
@@ -601,11 +624,12 @@ describe("instance state", () => {
   test("rejects duplicate instance subnets", () => {
     const repo = makeInstanceRepo();
     try {
-      mkdirSync(join(repo, ".rootcell/instances/default"), { recursive: true });
-      mkdirSync(join(repo, ".rootcell/instances/dev"), { recursive: true });
-      writeFileSync(join(repo, ".rootcell/instances/default/state.json"), stateJson("default", "192.168.100"), "utf8");
-      writeFileSync(join(repo, ".rootcell/instances/dev/state.json"), stateJson("dev", "192.168.100"), "utf8");
-      expect(() => loadRootcellInstance(repo, "default", {})).toThrow("allocated to multiple rootcell instances");
+      const env = instanceEnv(repo);
+      seedRootcellInstanceFiles(repo, "default", ignoreLog, env);
+      seedRootcellInstanceFiles(repo, "dev", ignoreLog, env);
+      writeFileSync(instancePaths(repo, "default", env).statePath, stateJson("default", "192.168.100"), "utf8");
+      writeFileSync(instancePaths(repo, "dev", env).statePath, stateJson("dev", "192.168.100"), "utf8");
+      expect(() => loadRootcellInstance(repo, "default", env)).toThrow("allocated to multiple rootcell instances");
     } finally {
       rmSync(repo, { recursive: true, force: true });
     }
@@ -614,12 +638,14 @@ describe("instance state", () => {
   test("lists only instances with vfkit VM state", () => {
     const repo = makeInstanceRepo();
     try {
-      mkdirSync(join(repo, ".rootcell/instances/default"), { recursive: true });
-      mkdirSync(join(repo, ".rootcell/instances/dev/vfkit/agent-dev"), { recursive: true });
-      writeFileSync(join(repo, ".rootcell/instances/default/state.json"), stateJson("default", "192.168.100"), "utf8");
-      writeFileSync(join(repo, ".rootcell/instances/dev/state.json"), stateJson("dev", "192.168.101"), "utf8");
+      const env = instanceEnv(repo);
+      seedRootcellInstanceFiles(repo, "default", ignoreLog, env);
+      seedRootcellInstanceFiles(repo, "dev", ignoreLog, env);
+      mkdirSync(join(instancePaths(repo, "dev", env).dir, "v", "a"), { recursive: true });
+      writeFileSync(instancePaths(repo, "default", env).statePath, stateJson("default", "192.168.100"), "utf8");
+      writeFileSync(instancePaths(repo, "dev", env).statePath, stateJson("dev", "192.168.101"), "utf8");
 
-      expect(listRootcellVmInstanceNames(repo)).toEqual(["dev"]);
+      expect(listRootcellVmInstanceNames(repo, env)).toEqual(["dev"]);
     } finally {
       rmSync(repo, { recursive: true, force: true });
     }
@@ -629,13 +655,13 @@ describe("instance state", () => {
 describe("reload helper", () => {
   test("generates dnsmasq server entries from non-comment lines", () => {
     const config = dnsmasqAllowlistConfig("# comment\n\nexample.com\n*.example.org\n");
-    expect(config).toBe("server=/example.com/1.1.1.1\nserver=/*.example.org/1.1.1.1\n");
+    expect(config).toBe("server=/example.com/127.0.0.53\nserver=/*.example.org/127.0.0.53\n");
     expect(generatedLineCount(config)).toBe(2);
   });
 
   test("generates dnsmasq catch-all entry from wildcard line", () => {
     const config = dnsmasqAllowlistConfig("  *  \n");
-    expect(config).toBe("server=/#/1.1.1.1\n");
+    expect(config).toBe("server=/#/127.0.0.53\n");
     expect(generatedLineCount(config)).toBe(1);
   });
 });
@@ -682,16 +708,17 @@ function stripTrailingBlankLine(text: string): string {
   return text.endsWith("\n\n") ? text.slice(0, -1) : text;
 }
 
-function fakeInstance(name: string): RootcellInstance {
+function fakeInstance(name: string, repo = "/repo", env: NodeJS.ProcessEnv = {}): RootcellInstance {
+  const paths = instancePaths(repo, name, env);
   return {
     name,
-    dir: `/repo/.rootcell/instances/${name}`,
-    envPath: `/repo/.rootcell/instances/${name}/.env`,
-    secretsPath: `/repo/.rootcell/instances/${name}/secrets.env`,
-    proxyDir: `/repo/.rootcell/instances/${name}/proxy`,
-    pkiDir: `/repo/.rootcell/instances/${name}/pki`,
-    generatedDir: `/repo/.rootcell/instances/${name}/generated`,
-    statePath: `/repo/.rootcell/instances/${name}/state.json`,
+    dir: paths.dir,
+    envPath: paths.envPath,
+    secretsPath: paths.secretsPath,
+    proxyDir: paths.proxyDir,
+    pkiDir: paths.pkiDir,
+    generatedDir: paths.generatedDir,
+    statePath: paths.statePath,
     state: {
       schemaVersion: 1,
       subnet: "192.168.109.0",
@@ -700,6 +727,10 @@ function fakeInstance(name: string): RootcellInstance {
       agentIp: "192.168.109.3",
     },
   };
+}
+
+function instanceEnv(repo: string): NodeJS.ProcessEnv {
+  return { ROOTCELL_STATE_DIR: join(repo, ".state") };
 }
 
 function makeInstanceRepo(): string {

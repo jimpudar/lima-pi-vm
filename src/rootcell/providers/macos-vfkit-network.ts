@@ -37,6 +37,9 @@ export class MacOsVfkitNetworkProvider implements NetworkProvider<VfkitNetworkAt
   private pythonBin = "";
 
   plan(): NetworkPlan<VfkitNetworkAttachment> {
+    const agentPrivateMac = getMacAddressFor(this.config, "agent", "private");
+    const firewallPrivateMac = getMacAddressFor(this.config, "firewall", "private");
+    const firewallControlMac = getMacAddressFor(this.config, "firewall", "control");
     return {
       provider: this.id,
       guest: {
@@ -47,20 +50,23 @@ export class MacOsVfkitNetworkProvider implements NetworkProvider<VfkitNetworkAt
         firewallPrivateInterface: "enp0s2",
         firewallEgressInterface: "enp0s1",
         firewallControlInterface: "enp0s1",
+        agentPrivateMac,
+        firewallPrivateMac,
+        firewallControlMac,
       },
       vms: {
         agent: {
           kind: "vfkit",
           role: "agent",
-          privateMac: getMacAddressFor(this.config, "agent", "private"),
+          privateMac: agentPrivateMac,
           privateSocketPath: this.agentSocketPath(),
           useNat: false,
         },
         firewall: {
           kind: "vfkit",
           role: "firewall",
-          controlMac: getMacAddressFor(this.config, "firewall", "control"),
-          privateMac: getMacAddressFor(this.config, "firewall", "private"),
+          controlMac: firewallControlMac,
+          privateMac: firewallPrivateMac,
           privateSocketPath: this.firewallSocketPath(),
           useNat: true,
         },
@@ -154,11 +160,15 @@ export class MacOsVfkitNetworkProvider implements NetworkProvider<VfkitNetworkAt
   }
 
   private readState(): PrivateLinkState | null {
-    if (!existsSync(this.statePath())) {
+    return this.readStateFile(this.statePath());
+  }
+
+  private readStateFile(path: string): PrivateLinkState | null {
+    if (!existsSync(path)) {
       return null;
     }
     try {
-      const raw: unknown = JSON.parse(readFileSync(this.statePath(), "utf8"));
+      const raw: unknown = JSON.parse(readFileSync(path, "utf8"));
       return PrivateLinkStateSchema.parse(raw);
     } catch {
       return null;
@@ -166,7 +176,7 @@ export class MacOsVfkitNetworkProvider implements NetworkProvider<VfkitNetworkAt
   }
 
   private networkDir(): string {
-    return join(this.config.instanceDir, "vfkit", "network");
+    return join(this.config.instanceDir, "v", "n");
   }
 
   private statePath(): string {
@@ -174,11 +184,11 @@ export class MacOsVfkitNetworkProvider implements NetworkProvider<VfkitNetworkAt
   }
 
   private firewallSocketPath(): string {
-    return join(this.networkDir(), "firewall-private.sock");
+    return join(this.networkDir(), "fw.sock");
   }
 
   private agentSocketPath(): string {
-    return join(this.networkDir(), "agent-private.sock");
+    return join(this.networkDir(), "ag.sock");
   }
 
   private ensurePython(): string {
@@ -210,7 +220,10 @@ export function getMacAddressFor(config: RootcellConfig, role: string, name: str
 function processIsRunning(pid: number): boolean {
   try {
     process.kill(pid, 0);
-  } catch {
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "EPERM") {
+      return true;
+    }
     return false;
   }
   const stat = runCapture("ps", ["-o", "stat=", "-p", String(pid)], { allowFailure: true }).stdout.trim();

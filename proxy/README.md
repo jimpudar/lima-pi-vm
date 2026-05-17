@@ -19,7 +19,7 @@ VM passes through services running in the firewall VM:
   the agent VM's SSH `ProxyCommand`, which speaks HTTP `CONNECT host:22`.
   Matches against `allowed-ssh.txt`.
 - **dnsmasq** at `<firewall-ip>:53` — DNS resolver that forwards names
-  matching `allowed-dns.txt` to 1.1.1.1 and returns `REFUSED` for
+  matching `allowed-dns.txt` to the firewall system resolver and returns `REFUSED` for
   everything else.
 
 Cleartext HTTP (TCP/80) is **not** proxied. The HTTP `Host` header is
@@ -35,14 +35,14 @@ stays explicit (hostname allowlist) and is **not** MITM'd — TLS
 intercepting SSH would break key-based auth from inside the VM.
 
 The three allowlist files are per-instance and gitignored under
-`.rootcell/instances/<name>/proxy/`; `./rootcell` seeds each from its
+`<instance-dir>/proxy/`; `./rootcell` seeds each from its
 `.defaults` sibling on first run. Edit the live `*.txt` to customize, delete it
 and re-run `./rootcell` to reset to project defaults.
 
 ## CA materials
 
 `./rootcell` generates a per-instance CA the first time it runs and persists it
-under `.rootcell/instances/<name>/pki/` on the host (gitignored). Three files:
+under `<instance-dir>/pki/` on the host. Three files:
 
 - `agent-vm-ca.key` — RSA 2048 private key, mode 0600. Host only.
 - `agent-vm-ca-cert.pem` — public cert. Shipped into the agent VM
@@ -87,7 +87,7 @@ exfil, but a few gaps remain:
 
 ## Adding a host
 
-Edit the relevant file under `.rootcell/instances/<name>/proxy/` and run
+Edit the relevant file under `<instance-dir>/proxy/` and run
 `./rootcell --instance <name> allow` from the repo root. The files are copied
 into the firewall VM and dnsmasq is reloaded; mitmproxy picks up changes on its
 next event (no restart). End-to-end takes ~1s.
@@ -143,8 +143,11 @@ bootstrap/testing policy.
 ## Debugging
 
 ```bash
+ROOTCELL_STATE_DIR="${ROOTCELL_STATE_DIR:-$HOME/.rootcell}"
+INSTANCE_DIR="$(find "$ROOTCELL_STATE_DIR/i" -maxdepth 3 -name instance.json -exec sh -c 'grep -q "\"name\": \"default\"" "$1" && dirname "$1"' sh {} \; | head -n1)"
+
 # What's the firewall VM logging?
-ssh -F .rootcell/instances/default/ssh/config rootcell-firewall -- \
+ssh -F "$INSTANCE_DIR/ssh/config" rootcell-firewall -- \
   journalctl -u mitmproxy-explicit -u mitmproxy-transparent -u dnsmasq -f
 
 # What is the agent sending to Bedrock?
@@ -152,18 +155,18 @@ ssh -F .rootcell/instances/default/ssh/config rootcell-firewall -- \
 ./rootcell spy --tui
 
 # Is mitmproxy listening on both ports?
-ssh -F .rootcell/instances/default/ssh/config rootcell-firewall -- \
+ssh -F "$INSTANCE_DIR/ssh/config" rootcell-firewall -- \
   "ss -tln '( sport = :8080 or sport = :8081 )'"
 
 # Is the NAT REDIRECT rule loaded?
-ssh -F .rootcell/instances/default/ssh/config rootcell-firewall -- \
+ssh -F "$INSTANCE_DIR/ssh/config" rootcell-firewall -- \
   sudo nft list table ip agent-vm-nat
 
 # What's the agent VM seeing?
 ./rootcell -- curl -v https://example.com 2>&1 | head -20
 
 # Allowlist content currently inside the VM:
-ssh -F .rootcell/instances/default/ssh/config rootcell-firewall -- \
+ssh -F "$INSTANCE_DIR/ssh/config" rootcell-firewall -- \
   "cat /etc/agent-vm/allowed-https.txt && cat /etc/agent-vm/dnsmasq-allowlist.conf"
 ```
 

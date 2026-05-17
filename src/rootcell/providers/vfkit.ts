@@ -111,6 +111,7 @@ export class VfkitVmProvider implements VmProvider<VfkitNetworkAttachment> {
         this.log(`${input.name} vfkit VM not found; creating from rootcell image...`);
         this.prepareDisk(input.role, input.name);
         this.startVm(input);
+        await this.forgetSshHostKey(input.name);
         await this.waitForSsh(input.name);
         return { created: true };
       case "unexpected":
@@ -328,7 +329,7 @@ export class VfkitVmProvider implements VmProvider<VfkitNetworkAttachment> {
   }
 
   private vmDir(name: string): string {
-    return join(this.config.instanceDir, "vfkit", name);
+    return join(this.config.instanceDir, "v", this.vmRoleDir(name));
   }
 
   private statePath(name: string): string {
@@ -357,6 +358,16 @@ export class VfkitVmProvider implements VmProvider<VfkitNetworkAttachment> {
 
   private knownHostsPath(): string {
     return join(this.config.instanceDir, "ssh", "known_hosts");
+  }
+
+  private vmRoleDir(name: string): "a" | "f" {
+    if (name === this.config.agentVm) {
+      return "a";
+    }
+    if (name === this.config.firewallVm) {
+      return "f";
+    }
+    throw new Error(`unknown rootcell VM for vfkit provider: ${name}`);
   }
 }
 
@@ -559,7 +570,10 @@ function normalizeMac(mac: string): string {
 function processIsRunning(pid: number): boolean {
   try {
     process.kill(pid, 0);
-  } catch {
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "EPERM") {
+      return true;
+    }
     return false;
   }
   const stat = runCapture("ps", ["-o", "stat=", "-p", String(pid)], { allowFailure: true }).stdout.trim();

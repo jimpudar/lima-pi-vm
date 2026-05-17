@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   copyFileSync,
@@ -8,7 +9,8 @@ import {
   readdirSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 import { parseSchema } from "./schema.ts";
 import {
   InstanceStateSchema,
@@ -18,12 +20,13 @@ import {
 } from "./types.ts";
 
 const STATE_SCHEMA_VERSION = 1;
+const INSTANCE_METADATA_SCHEMA_VERSION = 1;
 const DEFAULT_INSTANCE = "default";
 const DEFAULT_POOL_START = "192.168.100.0";
 const DEFAULT_POOL_END = "192.168.254.0";
 const INSTANCE_NAME_RE = /^[a-z](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
 
-interface InstancePaths {
+export interface InstancePaths {
   readonly name: string;
   readonly dir: string;
   readonly envPath: string;
@@ -54,9 +57,10 @@ export function deriveVmNames(instanceName: string): { readonly agentVm: string;
   return { agentVm: `agent-${instanceName}`, firewallVm: `firewall-${instanceName}` };
 }
 
-export function seedRootcellInstanceFiles(repoDir: string, instanceName: string, log: (message: string) => void): void {
-  const paths = instancePaths(repoDir, instanceName);
+export function seedRootcellInstanceFiles(repoDir: string, instanceName: string, log: (message: string) => void, env: NodeJS.ProcessEnv = process.env): void {
+  const paths = instancePaths(repoDir, instanceName, env);
   mkdirSync(paths.dir, { recursive: true, mode: 0o700 });
+  writeInstanceMetadata(paths);
   mkdirSync(paths.proxyDir, { recursive: true, mode: 0o700 });
   mkdirSync(paths.generatedDir, { recursive: true, mode: 0o700 });
 
@@ -86,44 +90,50 @@ export function seedRootcellInstanceFiles(repoDir: string, instanceName: string,
   if (legacyDefault && !existsSync(instanceCa) && existsSync(legacyPki)) {
     cpSync(legacyPki, paths.pkiDir, { recursive: true });
     chmodSync(paths.pkiDir, 0o700);
-    log(`seeded ${instanceName} pki from legacy pki/`);
+    log(`seeded ${instanceName} pki at ${paths.pkiDir} from legacy pki/`);
   }
 }
 
 export function loadRootcellInstance(repoDir: string, instanceName: string, env: NodeJS.ProcessEnv): RootcellInstance {
-  const paths = instancePaths(repoDir, instanceName);
+  const paths = instancePaths(repoDir, instanceName, env);
   mkdirSync(paths.dir, { recursive: true, mode: 0o700 });
+  writeInstanceMetadata(paths);
   mkdirSync(paths.generatedDir, { recursive: true, mode: 0o700 });
   const state = ensureInstanceState(repoDir, paths, env);
   return rootcellInstanceFromPaths(paths, state);
 }
 
-export function loadExistingRootcellInstance(repoDir: string, instanceName: string): RootcellInstance | null {
-  const paths = instancePaths(repoDir, instanceName);
+export function loadExistingRootcellInstance(repoDir: string, instanceName: string, env: NodeJS.ProcessEnv = process.env): RootcellInstance | null {
+  const paths = instancePaths(repoDir, instanceName, env);
   if (!existsSync(paths.statePath)) {
     return null;
   }
   return rootcellInstanceFromPaths(paths, readState(paths.name, paths.statePath));
 }
 
-export function listRootcellVmInstanceNames(repoDir: string): readonly string[] {
-  const root = join(repoDir, ".rootcell", "instances");
+export function listRootcellVmInstanceNames(repoDir: string, env: NodeJS.ProcessEnv = process.env): readonly string[] {
+  return listRootcellInstanceNames(repoDir, env)
+    .filter((name) => instanceHasVmState(repoDir, name, env))
+    .sort();
+}
+
+export function listRootcellInstanceNames(repoDir: string, env: NodeJS.ProcessEnv = process.env): readonly string[] {
+  const root = rootcellInstancesRoot(repoDir, env);
   if (!existsSync(root)) {
     return [];
   }
   return readdirSync(root, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory() && INSTANCE_NAME_RE.test(entry.name))
-    .map((entry) => entry.name)
-    .filter((name) => instanceHasVmState(repoDir, name))
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => readInstanceMetadataName(join(root, entry.name)))
+    .filter((name): name is string => name !== null)
     .sort();
 }
 
-function instanceHasVmState(repoDir: string, instanceName: string): boolean {
-  const paths = instancePaths(repoDir, instanceName);
-  const vmNames = deriveVmNames(instanceName);
-  return existsSync(join(paths.dir, "vfkit", vmNames.agentVm))
-    || existsSync(join(paths.dir, "vfkit", vmNames.firewallVm))
-    || existsSync(join(paths.dir, "vfkit", "network"));
+function instanceHasVmState(repoDir: string, instanceName: string, env: NodeJS.ProcessEnv): boolean {
+  const paths = instancePaths(repoDir, instanceName, env);
+  return existsSync(join(paths.dir, "v", "a"))
+    || existsSync(join(paths.dir, "v", "f"))
+    || existsSync(join(paths.dir, "v", "n"));
 }
 
 function rootcellInstanceFromPaths(paths: InstancePaths, state: InstanceState): RootcellInstance {
@@ -140,9 +150,12 @@ function rootcellInstanceFromPaths(paths: InstancePaths, state: InstanceState): 
   }, `invalid rootcell instance for ${paths.name}`);
 }
 
-export function instancePaths(repoDir: string, instanceName: string): InstancePaths {
+export function instancePaths(repoDir: string, instanceName: string, env: NodeJS.ProcessEnv = process.env): InstancePaths {
   const name = validateInstanceName(instanceName);
-  const dir = join(repoDir, ".rootcell", "instances", name);
+  return pathsFromDir(name, rootcellRuntimeDir(repoDir, name, env));
+}
+
+function pathsFromDir(name: string, dir: string): InstancePaths {
   return {
     name,
     dir,
@@ -155,8 +168,38 @@ export function instancePaths(repoDir: string, instanceName: string): InstancePa
   };
 }
 
+export function rootcellRuntimeDir(repoDir: string, instanceName: string, env: NodeJS.ProcessEnv = process.env): string {
+  const name = validateInstanceName(instanceName);
+  return join(rootcellInstancesRoot(repoDir, env), instanceRuntimeKey(name));
+}
+
+export function rootcellInstancesRoot(repoDir: string, env: NodeJS.ProcessEnv = process.env): string {
+  const root = configuredStateRoot(env);
+  return join(root, "i", repoRuntimeKey(repoDir));
+}
+
+function repoRuntimeKey(repoDir: string): string {
+  return createHash("sha256").update(resolve(repoDir)).digest("hex").slice(0, 16);
+}
+
+function instanceRuntimeKey(instanceName: string): string {
+  return createHash("sha256").update(validateInstanceName(instanceName)).digest("hex").slice(0, 16);
+}
+
+function configuredStateRoot(env: NodeJS.ProcessEnv): string {
+  const configured = env.ROOTCELL_STATE_DIR;
+  if (configured !== undefined && configured.length > 0) {
+    return configured;
+  }
+  const home = env.HOME !== undefined && env.HOME.length > 0 ? env.HOME : homedir();
+  if (home.length > 0) {
+    return join(home, ".rootcell");
+  }
+  throw new Error("rootcell needs HOME or ROOTCELL_STATE_DIR to choose a persistent state directory");
+}
+
 function ensureInstanceState(repoDir: string, paths: InstancePaths, env: NodeJS.ProcessEnv): InstanceState {
-  const existingEntries = readAllInstanceStates(repoDir);
+  const existingEntries = readAllInstanceStates(repoDir, env);
   assertNoSubnetCollisions(existingEntries);
 
   if (existsSync(paths.statePath)) {
@@ -184,26 +227,54 @@ function seedFile(dest: string, source: string, log: (message: string) => void, 
     return;
   }
   copyFileSync(source, dest);
-  log(`seeded ${label} from ${source}`);
+  log(`seeded ${label} at ${dest} from ${source}`);
 }
 
-function readAllInstanceStates(repoDir: string): StateEntry[] {
-  const root = join(repoDir, ".rootcell", "instances");
+function readAllInstanceStates(repoDir: string, env: NodeJS.ProcessEnv): StateEntry[] {
+  const root = rootcellInstancesRoot(repoDir, env);
   if (!existsSync(root)) {
     return [];
   }
   const entries: StateEntry[] = [];
   for (const name of readdirSync(root)) {
-    if (!INSTANCE_NAME_RE.test(name)) {
+    const instanceName = readInstanceMetadataName(join(root, name));
+    if (instanceName === null) {
       continue;
     }
-    const paths = instancePaths(repoDir, name);
+    const paths = instancePaths(repoDir, instanceName, env);
     if (!existsSync(paths.statePath)) {
       continue;
     }
-    entries.push({ name, state: readState(name, paths.statePath) });
+    entries.push({ name: instanceName, state: readState(instanceName, paths.statePath) });
   }
   return entries;
+}
+
+function writeInstanceMetadata(paths: InstancePaths): void {
+  writeFileSync(join(paths.dir, "instance.json"), `${JSON.stringify({
+    schemaVersion: INSTANCE_METADATA_SCHEMA_VERSION,
+    name: paths.name,
+  }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+}
+
+function readInstanceMetadataName(dir: string): string | null {
+  try {
+    const raw = JSON.parse(readFileSync(join(dir, "instance.json"), "utf8")) as unknown;
+    if (
+      raw !== null
+      && typeof raw === "object"
+      && "schemaVersion" in raw
+      && raw.schemaVersion === INSTANCE_METADATA_SCHEMA_VERSION
+      && "name" in raw
+      && typeof raw.name === "string"
+      && INSTANCE_NAME_RE.test(raw.name)
+    ) {
+      return raw.name;
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 function readState(name: string, path: string): InstanceState {

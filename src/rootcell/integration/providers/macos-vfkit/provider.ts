@@ -10,6 +10,7 @@ import {
 } from "../../common/fixtures.ts";
 import { runCapture } from "../../../process.ts";
 import type { RootcellConfig } from "../../../types.ts";
+import { instancePaths } from "../../../instance.ts";
 import { MacOsVfkitNetworkProvider, type VfkitNetworkAttachment } from "../../../providers/macos-vfkit-network.ts";
 import { VfkitVmProvider } from "../../../providers/vfkit.ts";
 import type { ProviderBundle } from "../../../providers/types.ts";
@@ -39,15 +40,15 @@ export function createBundle(
 }
 
 export function vfkitStatePath(repoDir: string, name: string, instance = TEST_INSTANCE): string {
-  return join(repoDir, ".rootcell", "instances", instance, "vfkit", name, "state.json");
+  return join(instancePaths(repoDir, instance, process.env).dir, "v", vfkitRoleDir(name), "state.json");
 }
 
 export function vfkitPrivateLinkStatePath(repoDir: string, instance = TEST_INSTANCE): string {
-  return join(repoDir, ".rootcell", "instances", instance, "vfkit", "network", "private-link.json");
+  return join(instancePaths(repoDir, instance, process.env).dir, "v", "n", "private-link.json");
 }
 
 export function lifecycleInstanceDir(repoDir: string): string {
-  return join(repoDir, ".rootcell", "instances", LIFECYCLE_INSTANCE);
+  return instancePaths(repoDir, LIFECYCLE_INSTANCE, process.env).dir;
 }
 
 export function readJson(path: string): Record<string, unknown> {
@@ -66,7 +67,10 @@ export function pidFromState(path: string): number | null {
 export function processIsRunning(pid: number): boolean {
   try {
     process.kill(pid, 0);
-  } catch {
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "EPERM") {
+      return true;
+    }
     return false;
   }
   const stat = runCapture("ps", ["-o", "stat=", "-p", String(pid)], { allowFailure: true }).stdout.trim();
@@ -91,7 +95,7 @@ export async function stopVfkitTestResources(repoDir: string): Promise<void> {
 
 export async function removeVfkitTestState(repoDir: string): Promise<void> {
   await stopVfkitTestResources(repoDir);
-  rmSync(join(repoDir, ".rootcell", "instances", TEST_INSTANCE), {
+  rmSync(instancePaths(repoDir, TEST_INSTANCE, process.env).dir, {
     recursive: true,
     force: true,
   });
@@ -119,7 +123,7 @@ async function stopDetachedVfkitTestProcesses(repoDir: string): Promise<void> {
 
 function vfkitTestProcessPids(repoDir: string): readonly number[] {
   const needles = [TEST_INSTANCE, LIFECYCLE_INSTANCE]
-    .map((instance) => join(repoDir, ".rootcell", "instances", instance, "vfkit"));
+    .map((instance) => join(instancePaths(repoDir, instance, process.env).dir, "v"));
   const ps = runCapture("ps", ["-axo", "pid=,command="], { allowFailure: true });
   if (ps.status !== 0) {
     return [];
@@ -177,13 +181,23 @@ export async function prepareLifecycleInstance(repoDir: string): Promise<void> {
   }, null, 2)}\n`, "utf8");
   writeStoppedLifecycleVmState(repoDir, `agent-${LIFECYCLE_INSTANCE}`);
   writeStoppedLifecycleVmState(repoDir, `firewall-${LIFECYCLE_INSTANCE}`);
-  mkdirSync(join(lifecycleInstanceDir(repoDir), "vfkit", "network"), { recursive: true, mode: 0o700 });
+  mkdirSync(join(lifecycleInstanceDir(repoDir), "v", "n"), { recursive: true, mode: 0o700 });
 }
 
 function writeStoppedLifecycleVmState(repoDir: string, name: string): void {
-  const dir = join(lifecycleInstanceDir(repoDir), "vfkit", name);
+  const dir = join(lifecycleInstanceDir(repoDir), "v", vfkitRoleDir(name));
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   writeFileSync(join(dir, "disk.raw"), "");
+}
+
+function vfkitRoleDir(name: string): "a" | "f" {
+  if (name.startsWith("agent")) {
+    return "a";
+  }
+  if (name.startsWith("firewall")) {
+    return "f";
+  }
+  throw new Error(`unknown vfkit test VM name: ${name}`);
 }
 
 function sleep(milliseconds: number): Promise<void> {
