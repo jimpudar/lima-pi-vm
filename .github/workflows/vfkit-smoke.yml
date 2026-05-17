@@ -17,8 +17,6 @@ jobs:
     timeout-minutes: 60
     env:
       ROOTCELL_INTEGRATION_PROVIDER: macos-vfkit
-      ROOTCELL_STATE_DIR: ${{ runner.temp }}/rootcell-state
-      XDG_CACHE_HOME: ${{ runner.temp }}/xdg-cache
 
     steps:
       - name: Check out repository
@@ -26,6 +24,15 @@ jobs:
         timeout-minutes: 2
         with:
           persist-credentials: false
+
+      - name: Configure smoke test paths
+        timeout-minutes: 1
+        run: |
+          {
+            echo "ROOTCELL_STATE_DIR=$RUNNER_TEMP/rootcell-state"
+            echo "XDG_CACHE_HOME=$RUNNER_TEMP/xdg-cache"
+          } >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/rootcell-state" "$RUNNER_TEMP/xdg-cache"
 
       - name: Install Nix
         uses: cachix/install-nix-action@v31
