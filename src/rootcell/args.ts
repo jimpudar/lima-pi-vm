@@ -1,8 +1,7 @@
-import { existsSync, readdirSync } from "node:fs";
 import yargs from "yargs/yargs";
 import type { Argv, ArgumentsCamelCase } from "yargs";
 import { isRootcellSubcommand, ROOTCELL_SUBCOMMANDS, type RootcellSubcommand } from "./metadata.ts";
-import { validateInstanceName } from "./instance.ts";
+import { listRootcellInstanceNames, validateInstanceName } from "./instance.ts";
 import { parseSchema } from "./schema.ts";
 import {
   ParsedRootcellHandledArgsSchema,
@@ -69,13 +68,8 @@ function rootcellSubcommand(
 }
 
 function completeInstances(current: string): readonly string[] {
-  const root = ".rootcell/instances";
-  if (!existsSync(root)) {
-    return [];
-  }
-  return readdirSync(root, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory() && entry.name.startsWith(current))
-    .map((entry) => entry.name);
+  return listRootcellInstanceNames(process.cwd())
+    .filter((name) => name.startsWith(current));
 }
 
 function completion(

@@ -3,9 +3,9 @@
 # IPs and the subnet prefix.
 #
 # Per-instance overrides are copied into the guest as network-local.nix, which
-# `rootcell` generates from .rootcell/instances/<name>/state.json. If that file
-# doesn't exist (e.g. you're running `nix flake check` outside the script), the
-# defaults below apply.
+# `rootcell` generates from the instance state directory's state.json. If
+# that file doesn't exist (e.g. you're running `nix flake check` outside the
+# script), the defaults below apply.
 #
 # To change these for one instance, edit that instance's state/config and run
 # `./rootcell --instance <name> provision`. To change project-wide fallback
@@ -26,6 +26,12 @@ let
     # Subnet prefix length for the inter-VM network.
     networkPrefix = 24;
 
+    # Fallback interface names used when rootcell has not generated
+    # per-instance MAC-address metadata.
+    agentPrivateInterface = "enp0s1";
+    firewallPrivateInterface = "enp0s2";
+    firewallEgressInterface = "enp0s1";
+    firewallControlInterface = "enp0s1";
   };
 
   override =

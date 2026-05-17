@@ -7,6 +7,10 @@
 
 let
   net = import ./network.nix;
+  privateMatch =
+    if net ? agentPrivateMac
+    then { MACAddress = net.agentPrivateMac; }
+    else { Name = net.agentPrivateInterface; };
 in
 {
   imports = [ ./common.nix ];
@@ -24,11 +28,10 @@ in
   networking.useNetworkd = true;
   systemd.network.enable = true;
   systemd.network.wait-online.enable = false;
-  # The private vfkit link is enp0s1. Cloud-init performs a MAC-matched
-  # bootstrap before provisioning, then this NixOS config owns the steady-state
-  # interface.
+  # Cloud-init performs a MAC-matched bootstrap before provisioning, then this
+  # NixOS config owns the steady-state interface.
   systemd.network.networks."10-enp0s1" = {
-    matchConfig.Name = "enp0s1";
+    matchConfig = privateMatch;
     networkConfig = {
       DHCP = "no";
       IPv6AcceptRA = false;

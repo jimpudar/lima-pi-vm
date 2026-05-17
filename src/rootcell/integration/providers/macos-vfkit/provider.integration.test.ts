@@ -6,7 +6,8 @@ import { AGENT_IP, AGENT_VM_NAME, FIREWALL_VM_NAME, LIFECYCLE_INSTANCE, TEST_INS
 import { createProvisionedIntegrationFlow, IntegrationFlow } from "../../common/rootcell-flow.ts";
 import { selectedIntegrationProvider } from "../../common/provider-spec.ts";
 import type { VfkitNetworkAttachment } from "../../../providers/macos-vfkit-network.ts";
-import { macOsVfkitIntegrationProvider, prepareLifecycleInstance, processIsRunning, readJson, stopLifecycleProcesses, vfkitPrivateLinkStatePath, vfkitStatePath } from "./provider.ts";
+import { instancePaths } from "../../../instance.ts";
+import { lifecycleInstanceDir, macOsVfkitIntegrationProvider, prepareLifecycleInstance, processIsRunning, readJson, stopLifecycleProcesses, vfkitPrivateLinkStatePath, vfkitStatePath } from "./provider.ts";
 import { VfkitNetworkAttachmentSchema, VfkitPrivateLinkStateFileSchema, VfkitVmStateFileSchema } from "./schemas.ts";
 
 const shouldRun = selectedIntegrationProvider().id === macOsVfkitIntegrationProvider.id;
@@ -29,8 +30,8 @@ describe.skipIf(!shouldRun)("macos-vfkit integration provider", { concurrent: fa
       useNat: z.literal(true),
       controlMac: z.string().regex(/^52:54:00:/),
     })));
-    expect(plan.vms.agent.privateSocketPath).toContain("/vfkit/network/agent-private.sock");
-    expect(plan.vms.firewall.privateSocketPath).toContain("/vfkit/network/firewall-private.sock");
+    expect(plan.vms.agent.privateSocketPath).toContain("/v/n/ag.sock");
+    expect(plan.vms.firewall.privateSocketPath).toContain("/v/n/fw.sock");
   });
 
   test("records running vfkit VM state files", () => {
@@ -55,8 +56,8 @@ describe.skipIf(!shouldRun)("macos-vfkit integration provider", { concurrent: fa
     const state = readJson(vfkitPrivateLinkStatePath(flow.repoDir));
     expect(state).toEqual(expect.schemaMatching(VfkitPrivateLinkStateFileSchema));
     expect(processIsRunning(Number(state.pid))).toBe(true);
-    expect(String(state.agentSocketPath)).toContain("/vfkit/network/agent-private.sock");
-    expect(String(state.firewallSocketPath)).toContain("/vfkit/network/firewall-private.sock");
+    expect(String(state.agentSocketPath)).toContain("/v/n/ag.sock");
+    expect(String(state.firewallSocketPath)).toContain("/v/n/fw.sock");
   });
 
   test("writes a ProxyJump SSH config for direct firewall and jumped agent access", () => {
@@ -64,8 +65,7 @@ describe.skipIf(!shouldRun)("macos-vfkit integration provider", { concurrent: fa
     expect(config).toContain("Host rootcell-firewall");
     expect(config).toContain("Host rootcell-agent");
     expect(config).toContain("ProxyJump rootcell-firewall");
-    expect(config).toContain("ControlMaster auto");
-    expect(config).toContain("ControlPersist 60s");
+    expect(config).not.toContain("ControlPath");
   });
 
   test("supports host SSH to firewall and agent through the vfkit transport", () => {
@@ -103,9 +103,9 @@ describe.skipIf(!shouldRun)("macos-vfkit integration provider", { concurrent: fa
       const removeOutput = flow.rootcell(["remove", "--instance", LIFECYCLE_INSTANCE]);
       expect(removeOutput).toContain(`stopped ${LIFECYCLE_INSTANCE}, deleted state`);
       for (const path of [
-        join(lifecycleInstanceDir(flow.repoDir), "vfkit", `agent-${LIFECYCLE_INSTANCE}`),
-        join(lifecycleInstanceDir(flow.repoDir), "vfkit", `firewall-${LIFECYCLE_INSTANCE}`),
-        join(lifecycleInstanceDir(flow.repoDir), "vfkit", "network"),
+        join(lifecycleInstanceDir(flow.repoDir), "v", "a"),
+        join(lifecycleInstanceDir(flow.repoDir), "v", "f"),
+        join(lifecycleInstanceDir(flow.repoDir), "v", "n"),
       ]) {
         expect(existsSync(path)).toBe(false);
       }
@@ -120,11 +120,7 @@ describe.skipIf(!shouldRun)("macos-vfkit integration provider", { concurrent: fa
 });
 
 function sshConfigPath(repoDir: string): string {
-  return join(repoDir, ".rootcell", "instances", TEST_INSTANCE, "ssh", "config");
-}
-
-function lifecycleInstanceDir(repoDir: string): string {
-  return join(repoDir, ".rootcell", "instances", LIFECYCLE_INSTANCE);
+  return join(instancePaths(repoDir, TEST_INSTANCE, process.env).dir, "ssh", "config");
 }
 
 function sshGuest(flow: IntegrationFlow, alias: "rootcell-agent" | "rootcell-firewall", script: string): string {

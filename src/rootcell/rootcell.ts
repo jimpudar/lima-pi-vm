@@ -12,6 +12,7 @@ import { loadDotEnv, nixString, parseSecretMappings } from "./env.ts";
 import { DEFAULT_IMAGE_MANIFEST_URL } from "./images.ts";
 import {
   deriveVmNames,
+  instancePaths,
   listRootcellVmInstanceNames,
   loadExistingRootcellInstance,
   loadRootcellInstance,
@@ -258,6 +259,21 @@ export class RootcellApp<TAttachment extends VmNetworkAttachment> {
       `  firewallIp    = ${nixString(network.firewallIp)};`,
       `  agentIp       = ${nixString(network.agentIp)};`,
       `  networkPrefix = ${String(network.networkPrefix)};`,
+      `  agentPrivateInterface    = ${nixString(network.agentPrivateInterface)};`,
+      `  firewallPrivateInterface = ${nixString(network.firewallPrivateInterface)};`,
+      `  firewallEgressInterface  = ${nixString(network.firewallEgressInterface)};`,
+      ...(network.firewallControlInterface === undefined ? [] : [
+        `  firewallControlInterface = ${nixString(network.firewallControlInterface)};`,
+      ]),
+      ...(network.agentPrivateMac === undefined ? [] : [
+        `  agentPrivateMac    = ${nixString(network.agentPrivateMac)};`,
+      ]),
+      ...(network.firewallPrivateMac === undefined ? [] : [
+        `  firewallPrivateMac = ${nixString(network.firewallPrivateMac)};`,
+      ]),
+      ...(network.firewallControlMac === undefined ? [] : [
+        `  firewallControlMac = ${nixString(network.firewallControlMac)};`,
+      ]),
       "}",
       "",
     ].join("\n");
@@ -294,7 +310,7 @@ set -euo pipefail
 iface=''
 for path in /sys/class/net/*; do
   candidate="\${path##*/}"
-  if [ "$candidate" != lo ]; then
+  if [ "$candidate" != lo ] && { [ -z '${network.agentPrivateMac ?? ""}' ] || [ "$(cat "$path/address" 2>/dev/null)" = '${network.agentPrivateMac ?? ""}' ]; }; then
     iface="$candidate"
     break
   fi
@@ -688,9 +704,10 @@ sudo env \\
   SSL_CERT_FILE="$SSL_CERT_FILE" \\
   GIT_SSL_CAINFO="$GIT_SSL_CAINFO" \\
   REQUESTS_CA_BUNDLE="$REQUESTS_CA_BUNDLE" \\
-  nixos-rebuild switch --flake .#${this.nixosConfiguration("agent")}
-nix run .#home-manager -- switch --flake .#${this.config.guestUser}
+  nixos-rebuild boot --flake .#${this.nixosConfiguration("agent")}
 `]);
+    await this.restartAgentVm("restarting agent VM into provisioned system...");
+    await this.runAgentHomeManager();
     await this.providers.vm.forgetSshHostKey?.(this.config.agentVm);
     log("agent provisioning complete.");
     const pubkey = (await this.providers.vm.execCapture(this.config.agentVm, ["cat", `/home/${this.config.guestUser}/.ssh/id_rsa.pub`], {
@@ -706,6 +723,45 @@ ${pubkey}
 Run \`./rootcell pubkey\` to print it again.
 
 `);
+    }
+  }
+
+  private async restartAgentVm(message: string): Promise<void> {
+    log(message);
+    await this.providers.vm.forceStopIfRunning(this.config.agentVm);
+    await this.providers.vm.ensureRunning({
+      role: "agent",
+      name: this.config.agentVm,
+      network: this.networkPlan.vms.agent,
+    });
+  }
+
+  private async runAgentHomeManager(): Promise<void> {
+    const script = `
+set -e
+cd '${this.config.guestRepoDir}'
+export NIX_SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+export GIT_SSL_CAINFO=/etc/ssl/certs/ca-certificates.crt
+export REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+nix run .#home-manager -- switch --flake .#${this.config.guestUser}
+`;
+    const attempts = 4;
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      const result = await this.providers.vm.exec(this.config.agentVm, ["bash", "-lc", script], {
+        allowFailure: true,
+      });
+      if (result.status === 0) {
+        return;
+      }
+      if (result.status !== 255) {
+        throw new Error(`home-manager failed with exit ${String(result.status)}`);
+      }
+      if (attempt === attempts) {
+        throw new Error(`home-manager failed after ${String(attempts)} attempts (last exit ${String(result.status)})`);
+      }
+      log(`home-manager exited ${String(result.status)}; restarting agent VM and retrying (${String(attempt + 1)}/${String(attempts)})...`);
+      await this.restartAgentVm("restarting agent VM before home-manager retry...");
     }
   }
 
@@ -778,7 +834,7 @@ async function runListCommand(
   explicitInstance: boolean,
 ): Promise<number> {
   if (explicitInstance) {
-    const instance = loadExistingRootcellInstance(repoDir, instanceName);
+    const instance = loadExistingRootcellInstance(repoDir, instanceName, env);
     if (instance === null) {
       process.stdout.write(formatVmList(missingVmEntries(instanceName)));
       return 0;
@@ -788,8 +844,8 @@ async function runListCommand(
   }
 
   const entries: VmListEntry[] = [];
-  for (const name of listRootcellVmInstanceNames(repoDir)) {
-    const instance = loadExistingRootcellInstance(repoDir, name);
+  for (const name of listRootcellVmInstanceNames(repoDir, env)) {
+    const instance = loadExistingRootcellInstance(repoDir, name, env);
     if (instance !== null) {
       entries.push(...await appForInstance(repoDir, env, instance).listVms());
     }
@@ -804,7 +860,7 @@ async function runLifecycleCommand(
   command: "stop" | "remove",
   instanceName: string,
 ): Promise<number> {
-  const instance = loadExistingRootcellInstance(repoDir, instanceName);
+  const instance = loadExistingRootcellInstance(repoDir, instanceName, env);
   if (instance === null) {
     log(`rootcell instance '${instanceName}' not found; run ./rootcell --instance ${instanceName} first.`);
     return 1;
@@ -851,7 +907,7 @@ export async function rootcellMain(args: readonly string[], importMetaPath: stri
     }
 
     seedRootcellInstanceFiles(repoDir, parsed.instanceName, log);
-    loadDotEnv(join(repoDir, ".rootcell", "instances", parsed.instanceName, ".env"), process.env);
+    loadDotEnv(instancePaths(repoDir, parsed.instanceName, process.env).envPath, process.env);
     const instance = loadRootcellInstance(repoDir, parsed.instanceName, process.env);
     const config = buildConfig(repoDir, process.env, instance);
     const app = new RootcellApp(config, createProviderBundle(config, log));

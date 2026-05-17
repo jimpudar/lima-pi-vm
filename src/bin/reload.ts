@@ -2,6 +2,8 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
 
+const UPSTREAM_DNS = "127.0.0.53";
+
 export interface DnsmasqReloadPaths {
   readonly src: string;
   readonly dst: string;
@@ -15,9 +17,9 @@ export function dnsmasqAllowlistConfig(source: string): string {
       continue;
     }
     if (line === "*") {
-      lines.push("server=/#/1.1.1.1");
+      lines.push(`server=/#/${UPSTREAM_DNS}`);
     } else {
-      lines.push(`server=/${line}/1.1.1.1`);
+      lines.push(`server=/${line}/${UPSTREAM_DNS}`);
     }
   }
   return lines.length === 0 ? "" : `${lines.join("\n")}\n`;

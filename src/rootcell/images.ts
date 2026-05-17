@@ -183,7 +183,7 @@ export function imageCacheRoot(): string {
   if (home !== undefined && home.length > 0) {
     return join(home, ".cache", "rootcell", "images");
   }
-  return join("/tmp", "rootcell", "images");
+  throw new Error("rootcell needs HOME or XDG_CACHE_HOME to choose a persistent image cache directory");
 }
 
 export function imageDownloadUrl(entryUrl: string, manifestUrl: string): string {

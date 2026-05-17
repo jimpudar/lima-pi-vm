@@ -160,6 +160,11 @@ ROOTCELL_ZSTD=/path/to/zstd
 ROOTCELL_PYTHON=/path/to/python3
 ```
 
+Per-instance state defaults to `~/.rootcell/i/<repo-key>/<instance-key>`, where
+the keys are short hashes. This keeps vfkit Unix socket paths under macOS's
+limit. Set `ROOTCELL_STATE_DIR=/path/to/rootcell-state` to use a different
+persistent state root.
+
 vfkit is the supported VM runtime:
 
 ```bash
@@ -201,17 +206,19 @@ repository's GitHub Release assets.
 ## Allowing Network Access
 
 Network policy is per instance. On first run, `./rootcell` copies each tracked
-`proxy/*.defaults` file to `.rootcell/instances/<name>/proxy/`:
+`proxy/*.defaults` file to `<instance-dir>/proxy/`:
 
-- `.rootcell/instances/default/proxy/allowed-dns.txt` controls which hostnames can resolve.
-- `.rootcell/instances/default/proxy/allowed-https.txt` controls which HTTPS hosts can be reached.
-- `.rootcell/instances/default/proxy/allowed-ssh.txt` controls which SSH hosts can be reached.
+- `<instance-dir>/proxy/allowed-dns.txt` controls which hostnames can resolve.
+- `<instance-dir>/proxy/allowed-https.txt` controls which HTTPS hosts can be reached.
+- `<instance-dir>/proxy/allowed-ssh.txt` controls which SSH hosts can be reached.
 
 For most HTTPS access, add the host to both DNS and HTTPS, then reload:
 
 ```bash
-$EDITOR .rootcell/instances/default/proxy/allowed-dns.txt
-$EDITOR .rootcell/instances/default/proxy/allowed-https.txt
+ROOTCELL_STATE_DIR="${ROOTCELL_STATE_DIR:-$HOME/.rootcell}"
+INSTANCE_DIR="$(find "$ROOTCELL_STATE_DIR/i" -maxdepth 3 -name instance.json -exec sh -c 'grep -q "\"name\": \"default\"" "$1" && dirname "$1"' sh {} \; | head -n1)"
+$EDITOR "$INSTANCE_DIR/proxy/allowed-dns.txt"
+$EDITOR "$INSTANCE_DIR/proxy/allowed-https.txt"
 ./rootcell allow
 ```
 
@@ -231,7 +238,7 @@ by HTTPS request regexes because the firewall only sees `CONNECT host:22`.
 Reloading allowlists takes about a second and does not rebuild either VM. To
 reset a live allowlist to project defaults, delete the live file and run
 `./rootcell`; it will be re-seeded from its `.defaults` sibling. For a named
-instance, use the same paths under `.rootcell/instances/<name>/proxy/` and run
+instance, use the same paths under that instance's state directory and run
 `./rootcell --instance <name> allow`.
 
 ## Common Changes
@@ -334,7 +341,8 @@ home.nix                 pi, Git, SSH, and developer tools for the agent VM
 network.nix              default inter-VM network settings
 .env.defaults            seed values for per-instance `.env`
 secrets.env.defaults     seed Keychain secret mappings for per-instance `secrets.env`
-.rootcell/               gitignored per-instance state, allowlists, CA, and generated files
+~/.rootcell/
+                         per-instance state, allowlists, CA, SSH keys, generated files, and vfkit state
 proxy/                   allowlists and mitmproxy/dnsmasq firewall code
   agent_spy.py           Bedrock Runtime formatter for `./rootcell spy`
   agent_spy_tui.py       Textual browser for `./rootcell spy --tui`
@@ -344,8 +352,9 @@ completions/             bash and zsh completion for `rootcell`
 
 ## VM Lifecycle
 
-vfkit instance state lives under `.rootcell/instances/<name>/vfkit/`. The host
-control key and generated SSH config live under `.rootcell/instances/<name>/ssh/`.
+Per-instance state lives under `~/.rootcell/i/<repo-key>/<instance-key>/` by
+default. vfkit state lives under that directory's `v/` subdirectory; the host
+control key and generated SSH config live under `ssh/`.
 The agent VM is reached through SSH ProxyJump via the firewall VM; no VSOCK
 device is attached on the vfkit path.
 
@@ -353,14 +362,14 @@ Use `./rootcell list` to show known VMs and their state. `./rootcell stop`
 stops the selected instance's VMs, and `./rootcell remove` stops the selected
 instance and deletes its vfkit VM state. Instance-local configuration such as
 allowlists, Keychain mappings, CA files, and subnet allocation remains in
-`.rootcell/instances/<name>/` so the next start keeps the same instance
+the instance state directory so the next start keeps the same instance
 settings.
 
 ## Configuration
 
 ### Environment
 
-`./rootcell` seeds `.rootcell/instances/<name>/.env` from `.env.defaults` on
+`./rootcell` seeds `<instance-dir>/.env` from `.env.defaults` on
 first run. Edit that file for instance-local settings such as:
 
 ```sh
@@ -369,7 +378,7 @@ ROOTCELL_SUBNET_POOL_START=192.168.100.0
 ROOTCELL_SUBNET_POOL_END=192.168.254.0
 ```
 
-The first run also writes `.rootcell/instances/<name>/state.json` with the
+The first run also writes `<instance-dir>/state.json` with the
 instance's allocated `/24`. By default, rootcell chooses the first free subnet
 from `192.168.100.0/24` through `192.168.254.0/24`, uses `.2` for the firewall,
 and uses `.3` for the agent. Existing state is not recalculated if you later
@@ -384,7 +393,7 @@ AGENT_IP=192.168.109.3
 NETWORK_PREFIX=24
 ```
 
-`./rootcell` also seeds `.rootcell/instances/<name>/secrets.env` from
+`./rootcell` also seeds `<instance-dir>/secrets.env` from
 `secrets.env.defaults` on first run. This file maps agent VM environment
 variable names to macOS Keychain service names; it does not contain the secret
 values themselves:
@@ -397,7 +406,7 @@ For example, to inject an additional `ANTHROPIC_API_KEY`:
 
 ```sh
 security add-generic-password -a "$USER" -s anthropic-api-key -w "<your-key>"
-echo 'ANTHROPIC_API_KEY=anthropic-api-key' >> .rootcell/instances/default/secrets.env
+echo 'ANTHROPIC_API_KEY=anthropic-api-key' >> "$INSTANCE_DIR/secrets.env"
 ```
 
 If you want to use Anthropic or OpenAI subscriptions, you can log in from
@@ -446,10 +455,9 @@ Named instances are isolated from each other:
 Each instance gets its own VMs, state directory, CA, allowlists, Keychain mapping
 file, control SSH key, private-link state, and `/24`.
 
-The `default` instance migrates from legacy repo-local files on first run: if
-`.env`, `secrets.env`, `proxy/allowed-*.txt`, or `pki/` already exist, rootcell
-copies them into `.rootcell/instances/default/`. Named instances seed from the
-checked-in defaults.
+The `default` instance still seeds from legacy repo-local `.env`, `secrets.env`,
+`proxy/allowed-*.txt`, and `pki/` files when present. Named instances seed from
+the checked-in defaults.
 
 ## Troubleshooting
 
@@ -464,7 +472,9 @@ See formatted Bedrock Runtime requests and responses:
 Check that firewall services are listening:
 
 ```bash
-ssh -F .rootcell/instances/default/ssh/config rootcell-firewall -- \
+ROOTCELL_STATE_DIR="${ROOTCELL_STATE_DIR:-$HOME/.rootcell}"
+INSTANCE_DIR="$(find "$ROOTCELL_STATE_DIR/i" -maxdepth 3 -name instance.json -exec sh -c 'grep -q "\"name\": \"default\"" "$1" && dirname "$1"' sh {} \; | head -n1)"
+ssh -F "$INSTANCE_DIR/ssh/config" rootcell-firewall -- \
   "ss -tln '( sport = :8080 or sport = :8081 )' && ss -uln '( sport = :53 )'"
 ```
 
@@ -477,7 +487,7 @@ Test an HTTPS allowlist entry from inside the VM:
 Inspect the live allowlists inside the firewall VM:
 
 ```bash
-ssh -F .rootcell/instances/default/ssh/config rootcell-firewall -- \
+ssh -F "$INSTANCE_DIR/ssh/config" rootcell-firewall -- \
   "cat /etc/agent-vm/allowed-https.txt && cat /etc/agent-vm/dnsmasq-allowlist.conf"
 ```
 

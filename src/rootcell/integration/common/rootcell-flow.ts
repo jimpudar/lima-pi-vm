@@ -1,7 +1,7 @@
 import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadDotEnv } from "../../env.ts";
-import { loadRootcellInstance, seedRootcellInstanceFiles } from "../../instance.ts";
+import { instancePaths, loadRootcellInstance, seedRootcellInstanceFiles } from "../../instance.ts";
 import { runCapture } from "../../process.ts";
 import { buildConfig, RootcellApp } from "../../rootcell.ts";
 import type { RootcellConfig } from "../../types.ts";
@@ -24,7 +24,7 @@ export class IntegrationFlow<TAttachment extends VmNetworkAttachment = VmNetwork
     this.repoDir = findRepoDir(importMetaUrl);
     applyIntegrationEnvironment(process.env);
     seedRootcellInstanceFiles(this.repoDir, TEST_INSTANCE, this.log);
-    loadDotEnv(join(this.repoDir, ".rootcell", "instances", TEST_INSTANCE, ".env"), process.env);
+    loadDotEnv(instancePaths(this.repoDir, TEST_INSTANCE, process.env).envPath, process.env);
     const instance = loadRootcellInstance(this.repoDir, TEST_INSTANCE, process.env);
     this.config = buildConfig(this.repoDir, process.env, instance);
     this.providers = provider.createBundle(this.config, this.log);
