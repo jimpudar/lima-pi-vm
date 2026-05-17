@@ -12,6 +12,7 @@ import { selectedIntegrationProvider } from "./provider-spec.ts";
 
 export class IntegrationFlow<TAttachment extends VmNetworkAttachment = VmNetworkAttachment> {
   readonly repoDir: string;
+  readonly env: NodeJS.ProcessEnv;
   readonly config: RootcellConfig;
   readonly providers: ProviderBundle<TAttachment>;
   readonly app: RootcellApp<TAttachment>;
@@ -22,11 +23,12 @@ export class IntegrationFlow<TAttachment extends VmNetworkAttachment = VmNetwork
     private readonly log: (message: string) => void = integrationLog,
   ) {
     this.repoDir = findRepoDir(importMetaUrl);
-    applyIntegrationEnvironment(process.env);
-    seedRootcellInstanceFiles(this.repoDir, TEST_INSTANCE, this.log);
-    loadDotEnv(instancePaths(this.repoDir, TEST_INSTANCE, process.env).envPath, process.env);
-    const instance = loadRootcellInstance(this.repoDir, TEST_INSTANCE, process.env);
-    this.config = buildConfig(this.repoDir, process.env, instance);
+    this.env = { ...process.env };
+    applyIntegrationEnvironment(this.env);
+    seedRootcellInstanceFiles(this.repoDir, TEST_INSTANCE, this.log, this.env);
+    loadDotEnv(instancePaths(this.repoDir, TEST_INSTANCE, this.env).envPath, this.env);
+    const instance = loadRootcellInstance(this.repoDir, TEST_INSTANCE, this.env);
+    this.config = buildConfig(this.repoDir, this.env, instance);
     this.providers = provider.createBundle(this.config, this.log);
     this.app = new RootcellApp(this.config, this.providers);
   }

@@ -3,14 +3,13 @@ import { join } from "node:path";
 import { z } from "zod";
 import type { IntegrationProviderSpec } from "../../common/provider-spec.ts";
 import {
-  AGENT_VM_NAME,
-  FIREWALL_VM_NAME,
+  CLI_SMOKE_INSTANCE_PREFIX,
   LIFECYCLE_INSTANCE,
   TEST_INSTANCE,
 } from "../../common/fixtures.ts";
 import { runCapture } from "../../../process.ts";
 import type { RootcellConfig } from "../../../types.ts";
-import { instancePaths } from "../../../instance.ts";
+import { deriveVmNames, instancePaths, listRootcellInstanceNames } from "../../../instance.ts";
 import { MacOsVfkitNetworkProvider, type VfkitNetworkAttachment } from "../../../providers/macos-vfkit-network.ts";
 import { VfkitVmProvider } from "../../../providers/vfkit.ts";
 import type { ProviderBundle } from "../../../providers/types.ts";
@@ -39,12 +38,21 @@ export function createBundle(
   };
 }
 
-export function vfkitStatePath(repoDir: string, name: string, instance = TEST_INSTANCE): string {
-  return join(instancePaths(repoDir, instance, process.env).dir, "v", vfkitRoleDir(name), "state.json");
+export function vfkitStatePath(
+  repoDir: string,
+  name: string,
+  instance = TEST_INSTANCE,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  return join(instancePaths(repoDir, instance, env).dir, "v", vfkitRoleDir(name), "state.json");
 }
 
-export function vfkitPrivateLinkStatePath(repoDir: string, instance = TEST_INSTANCE): string {
-  return join(instancePaths(repoDir, instance, process.env).dir, "v", "n", "private-link.json");
+export function vfkitPrivateLinkStatePath(
+  repoDir: string,
+  instance = TEST_INSTANCE,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  return join(instancePaths(repoDir, instance, env).dir, "v", "n", "private-link.json");
 }
 
 export function lifecycleInstanceDir(repoDir: string): string {
@@ -86,9 +94,8 @@ export async function stopPidFromState(path: string): Promise<void> {
 }
 
 export async function stopVfkitTestResources(repoDir: string): Promise<void> {
-  await stopPidFromState(vfkitStatePath(repoDir, AGENT_VM_NAME));
-  await stopPidFromState(vfkitStatePath(repoDir, FIREWALL_VM_NAME));
-  await stopPidFromState(vfkitPrivateLinkStatePath(repoDir));
+  await stopVfkitInstanceResources(repoDir, TEST_INSTANCE);
+  await stopVfkitSmokeInstanceResources(repoDir);
   await stopLifecycleProcesses(repoDir);
   await stopDetachedVfkitTestProcesses(repoDir);
 }
@@ -103,6 +110,38 @@ export async function removeVfkitTestState(repoDir: string): Promise<void> {
     recursive: true,
     force: true,
   });
+  for (const instance of vfkitSmokeInstances(repoDir)) {
+    await removeVfkitInstanceState(repoDir, instance);
+  }
+}
+
+export async function stopVfkitInstanceResources(
+  repoDir: string,
+  instance: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<void> {
+  const names = deriveVmNames(instance);
+  await stopPidFromState(vfkitStatePath(repoDir, names.agentVm, instance, env));
+  await stopPidFromState(vfkitStatePath(repoDir, names.firewallVm, instance, env));
+  await stopPidFromState(vfkitPrivateLinkStatePath(repoDir, instance, env));
+}
+
+export async function removeVfkitInstanceState(
+  repoDir: string,
+  instance: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<void> {
+  await stopVfkitInstanceResources(repoDir, instance, env);
+  rmSync(instancePaths(repoDir, instance, env).dir, {
+    recursive: true,
+    force: true,
+  });
+}
+
+async function stopVfkitSmokeInstanceResources(repoDir: string): Promise<void> {
+  for (const instance of vfkitSmokeInstances(repoDir)) {
+    await stopVfkitInstanceResources(repoDir, instance);
+  }
 }
 
 export async function stopLifecycleProcesses(repoDir: string): Promise<void> {
@@ -122,7 +161,7 @@ async function stopDetachedVfkitTestProcesses(repoDir: string): Promise<void> {
 }
 
 function vfkitTestProcessPids(repoDir: string): readonly number[] {
-  const needles = [TEST_INSTANCE, LIFECYCLE_INSTANCE]
+  const needles = [TEST_INSTANCE, LIFECYCLE_INSTANCE, ...vfkitSmokeInstances(repoDir)]
     .map((instance) => join(instancePaths(repoDir, instance, process.env).dir, "v"));
   const ps = runCapture("ps", ["-axo", "pid=,command="], { allowFailure: true });
   if (ps.status !== 0) {
@@ -144,6 +183,11 @@ function vfkitTestProcessPids(repoDir: string): readonly number[] {
     }
   }
   return [...pids];
+}
+
+function vfkitSmokeInstances(repoDir: string): readonly string[] {
+  return listRootcellInstanceNames(repoDir, process.env)
+    .filter((name) => name.startsWith(CLI_SMOKE_INSTANCE_PREFIX));
 }
 
 async function stopPid(pid: number): Promise<void> {

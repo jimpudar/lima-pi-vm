@@ -40,6 +40,9 @@ const DefaultSpyOptionsSchema = z.object({
   tui: z.literal(false),
 }).strict();
 
+const MACOS_UNIX_SOCKET_PATH_LIMIT = 104;
+const VFKIT_SOCKET_PATH_LIMIT_WITH_HEADROOM = MACOS_UNIX_SOCKET_PATH_LIMIT - 8;
+
 const ignoreLog = (): void => undefined;
 
 function expectRunArgs(value: ParsedRootcellRunArgs): void {
@@ -111,6 +114,9 @@ describe("rootcell argument parsing", () => {
       rest: ["pi", "--model", "sonnet"],
       spyOptions: { raw: false, dedupe: true, tui: false },
     });
+    const numericOptions = runArgs(["--", "curl", "--connect-timeout", "5", "--max-time", "20", "https://github.com"]);
+    expectRunArgs(numericOptions);
+    expect(numericOptions.rest).toEqual(["curl", "--connect-timeout", "5", "--max-time", "20", "https://github.com"]);
   });
 
   test("parses instance flags in any command position", () => {
@@ -326,8 +332,8 @@ describe("VM and network providers", () => {
     expect(plan.vms.firewall.controlMac).toMatch(/^52:54:00:/);
     expect(plan.vms.agent.privateSocketPath).toBe(join(config.instanceDir, "v", "n", "ag.sock"));
     expect(plan.vms.firewall.privateSocketPath).toBe(join(config.instanceDir, "v", "n", "fw.sock"));
-    expect(plan.vms.agent.privateSocketPath.length).toBeLessThan(104);
-    expect(plan.vms.firewall.privateSocketPath.length).toBeLessThan(104);
+    expect(plan.vms.agent.privateSocketPath.length).toBeLessThan(VFKIT_SOCKET_PATH_LIMIT_WITH_HEADROOM);
+    expect(plan.vms.firewall.privateSocketPath.length).toBeLessThan(VFKIT_SOCKET_PATH_LIMIT_WITH_HEADROOM);
   });
 
   test("keeps vfkit socket paths short for long repos and instance names", () => {
@@ -336,10 +342,10 @@ describe("VM and network providers", () => {
     const config = buildConfig(repo, {}, fakeInstance(instanceName, repo));
     const plan = new MacOsVfkitNetworkProvider(config, ignoreLog).plan();
 
-    expect(plan.vms.agent.privateSocketPath.length).toBeLessThan(104);
-    expect(plan.vms.firewall.privateSocketPath.length).toBeLessThan(104);
-    expect(join(config.instanceDir, "v", "a", "rest.sock").length).toBeLessThan(104);
-    expect(join(config.instanceDir, "v", "f", "rest.sock").length).toBeLessThan(104);
+    expect(plan.vms.agent.privateSocketPath.length).toBeLessThan(VFKIT_SOCKET_PATH_LIMIT_WITH_HEADROOM);
+    expect(plan.vms.firewall.privateSocketPath.length).toBeLessThan(VFKIT_SOCKET_PATH_LIMIT_WITH_HEADROOM);
+    expect(join(config.instanceDir, "v", "a", "rest.sock").length).toBeLessThan(VFKIT_SOCKET_PATH_LIMIT_WITH_HEADROOM);
+    expect(join(config.instanceDir, "v", "f", "rest.sock").length).toBeLessThan(VFKIT_SOCKET_PATH_LIMIT_WITH_HEADROOM);
   });
 
   test("vfkit MACs are stable per repo instance and distinct across worktrees", () => {

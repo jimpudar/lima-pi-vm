@@ -45,11 +45,24 @@ function instanceName(argv: GlobalArgs): string {
   return validateInstanceName(lastString(argv.instance) ?? "default");
 }
 
-function stringArray(value: readonly string[] | string | undefined): readonly string[] {
+function stringArray(value: unknown): readonly string[] {
   if (value === undefined) {
     return [];
   }
-  return typeof value === "string" ? [value] : value;
+  if (Array.isArray(value)) {
+    return value.map(argString);
+  }
+  return [argString(value)];
+}
+
+function argString(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    return value.toString();
+  }
+  throw new Error(`invalid command argument value: ${JSON.stringify(value)}`);
 }
 
 function rootcellSubcommand(
